@@ -1,0 +1,8 @@
+/msr_*
+/*.iso
+/*.squashfs
+/*.deb
+/*.upper
+/*.root
+/*.work
+/*.mnt

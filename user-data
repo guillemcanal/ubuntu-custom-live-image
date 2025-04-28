@@ -1,0 +1,203 @@
+#cloud-config
+autoinstall:
+  version: 1
+  apt:
+    fallback: offline-install
+
+  source:
+    id: ubuntu-desktop
+
+  locale: fr_FR.UTF-8
+  keyboard:
+    layout: fr
+  timezone: Europe/Paris
+
+  user-data:
+    groups:
+      - docker
+    users:
+      - name: eleven
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        lock_passwd: false
+        passwd: "$6$d/H18YB3yErWuzFd$lS0Qn.WAS9mtIMNn/5Gkl0PnzBEx5jL5IQ36X3Jbs.EigvRchtpFzcejjJm7pGV6YoSce0oXP0jxhZYewyM60/"
+        primary_group: eleven
+        groups: adm, cdrom, sudo, dip, video, plugdev, users, docker, input
+
+  ssh:
+    install-server: true
+    allow-pw: true
+    authorized-keys: []
+
+  storage:
+    config:
+      - id: disk0
+        type: disk
+        ptable: gpt
+        wipe: superblock-recursive
+        match:
+          size: largest
+
+      - id: efi
+        type: partition
+        size: 1G
+        device: disk0
+        flag: boot
+        wipe: superblock
+        grub_device: true
+
+      - id: boot
+        type: partition
+        size: 2G
+        device: disk0
+        wipe: superblock
+
+      - id: pvpart
+        type: partition
+        device: disk0
+        size: -1
+        wipe: superblock
+
+      - id: pvpart-crypt
+        type: dm_crypt
+        volume: pvpart
+        key: "changezmoi"
+
+      - id: vg0
+        type: lvm_volgroup
+        name: vg0
+        devices:
+          - pvpart-crypt
+
+      - id: swap_lv
+        type: lvm_partition
+        name: swap_lv
+        volgroup: vg0
+        size: 6G
+
+      - id: root_lv
+        type: lvm_partition
+        name: root_lv
+        volgroup: vg0
+        size: -1
+
+      - id: efipart_fs
+        type: format
+        volume: efi
+        fstype: fat32
+
+      - id: bootpart_fs
+        type: format
+        volume: boot
+        fstype: ext4
+
+      - id: root_lv_fs
+        type: format
+        volume: root_lv
+        fstype: btrfs
+
+      - id: swap-fs
+        type: format
+        volume: swap_lv
+        fstype: swap
+
+      - id: efi-mount
+        type: mount
+        path: /boot/efi
+        device: efipart_fs
+        options: noatime,nodiratime
+
+      - id: boot-mount
+        type: mount
+        path: /boot
+        device: bootpart_fs
+        options: noatime,nodiratime
+
+      - id: swap-mount
+        type: mount
+        path: none
+        device: swap-fs
+
+      - id: root-mount
+        type: mount
+        path: /
+        device: root_lv_fs
+        options: compress-force=zstd:1,ssd,noatime,nodiratime  #compress maximum during install, will be set sanely in fstab
+
+  late-commands:
+  - |
+    set -ex
+    
+    ### BTRFS Subvolumes
+    BOOT_DEV=$(awk '$2 == "/target/boot" { print $1 }' /proc/mounts)
+    EFI_DEV=$(awk '$2 == "/target/boot/efi" { print $1 }' /proc/mounts)
+    ROOT_DEV=$(awk '$2 ~ "^/target$" { print $1 }' /proc/mounts)
+    ROOT_UUID=$(blkid -o value $ROOT_DEV | head -n 1)
+
+    umount /target/boot/efi || ( sleep 5 && umount /target/boot/efi || sleep 5 && ( umount -l /target/boot/efi || exit 0 ))
+    umount /target/boot || ( sleep 5 && umount /target/boot || sleep 5 && ( umount -l /target/boot || exit 0 ))
+    umount /target/cdrom || ( sleep 5 && umount /target/cdrom || sleep 5 && ( umount -l /target/cdrom || exit 0 ))
+    btrfs subvolume snapshot /target /target/@   #OS
+    mkdir /mnt/rootfs
+    mount -o subvol=@ $ROOT_DEV /mnt/rootfs
+    mount $BOOT_DEV /mnt/rootfs/boot
+    mount $EFI_DEV /mnt/rootfs/boot/efi
+    mount -o bind /dev  /mnt/rootfs/dev
+    mount -o bind /sys  /mnt/rootfs/sys
+    mount -o bind /proc /mnt/rootfs/proc
+    sed -i "/$ROOT_UUID/s/compress=zstd:15/subvol=@,compress=zstd:3/" /mnt/rootfs/etc/fstab
+    chroot /mnt/rootfs update-grub
+    chroot /mnt/rootfs grub-install --efi-directory=/boot/efi
+    find /target -mindepth 1 -maxdepth 1 -not -name '@' -exec rm -rf '{}' \;
+    btrfs subvolume create /target/@home   #data
+    btrfs subvolume create /target/@var_opt   #data
+    btrfs subvolume create /target/@srv   #data
+    btrfs subvolume create /target/@var   #data, nocow?
+    btrfs subvolume create /target/@var_spool   #data
+    btrfs subvolume create /target/@var_mail   #data
+    btrfs subvolume create /target/@var_cache   #cache, do no backup, nocow
+    btrfs subvolume create /target/@var_log   #logs, backup?, nocow?
+    btrfs subvolume create /target/@var_snap   #data
+    btrfs subvolume create /target/@usr_local   #data
+    
+    ### NoDataCow
+    chattr +C /target/@var_cache
+
+    ### Subvolumes 
+    mv /mnt/rootfs/home/* /target/@home/ || (exit 0)
+    mount -o subvol=@home $ROOT_DEV /mnt/rootfs/home || (exit 0)
+    mv /mnt/rootfs/var/cache/* /target/@var_cache/ || (exit 0)
+    mv /mnt/rootfs/var/opt/* /target/@var_opt/ || (exit 0)
+    mv /mnt/rootfs/var/spool/* /target/@var_spool/ || (exit 0)
+    mv /mnt/rootfs/var/mail/* /target/@var_mail/ || (exit 0)
+    mv /mnt/rootfs/var/log/* /target/@var_log/ || (exit 0)
+    mv /mnt/rootfs/var/snap/* /target/@var_snap/ || (exit 0)
+    mv /mnt/rootfs/var/* /target/@var/ || (exit 0)
+    mount -o subvol=@var $ROOT_DEV /mnt/rootfs/var/ || (exit 0)
+    mount -o subvol=@var_cache $ROOT_DEV /mnt/rootfs/var/cache || (exit 0)
+    mount -o subvol=@var_spool $ROOT_DEV /mnt/rootfs/var/spool || (exit 0)
+    mount -o subvol=@var_log $ROOT_DEV /mnt/rootfs/var/log || (exit 0)
+    mount -o subvol=@var_mail $ROOT_DEV /mnt/rootfs/var/mail || (exit 0)
+    mount -o subvol=@var_opt $ROOT_DEV /mnt/rootfs/var/opt || (exit 0)
+    mount -o subvol=@var_snap $ROOT_DEV /mnt/rootfs/var/snap || (exit 0)
+
+    echo "/dev/disk/by-uuid/$ROOT_UUID /home btrfs noatime,nodiratime,subvol=@home 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /var btrfs noatime,nodiratime,subvol=@var 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /var/opt btrfs noatime,nodiratime,subvol=@var_opt 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /var/spool btrfs noatime,nodiratime,subvol=@var_spool 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /var/cache btrfs noatime,nodiratime,subvol=@var_cache 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /var/mail btrfs noatime,nodiratime,subvol=@var_mail 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /var/snap btrfs noatime,nodiratime,subvol=@var_snap 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /srv btrfs noatime,nodiratime,subvol=@srv 0 0" >> /mnt/rootfs/etc/fstab
+    echo "/dev/disk/by-uuid/$ROOT_UUID /usr/local btrfs noatime,nodiratime,subvol=@usr_local 0 0" >> /mnt/rootfs/etc/fstab
+
+    ### journald limits
+    echo "SystemMaxUse=1G" >> /mnt/rootfs/systemd/journald.conf || (exit 0)
+    echo "RuntimeMaxUse=200M" >> /mnt/rootfs/systemd/journald.conf || (exit 0)
+    
+    ### Cleanup
+    chroot /mnt/rootfs apt autoremove || (exit 0)
+    umount /target/ && mkdir -p /target/var/log/ && mount -o subvol=@var_log $ROOT_DEV /target/var/log/   #needed for install logs
+    fstrim -v /mnt/rootfs || (exit 0)
+       
+    reboot
