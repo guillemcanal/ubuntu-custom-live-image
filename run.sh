@@ -172,7 +172,7 @@ sudo chroot msr_image /bin/bash -x <<'EOF'
 
 # Install some improtant packages
 apt update
-apt install --no-install-recommends -y software-properties-common wpasupplicant
+apt install --no-install-recommends -y software-properties-common wpasupplicant cracklib-runtime
 
 # Add all ubuntu distribution components
 add-apt-repository -y universe
@@ -251,9 +251,6 @@ sudo mount none -t devpts msr_desktop/dev/pts
 sudo mount none -t tmpfs msr_desktop/tmp
 sudo mount none -t tmpfs msr_desktop/run
 
-# Copy Luks password changer
-sudo cp ./luks-password-changer.deb msr_desktop/opt/
-
 # Copy GPG/ASC keys
 sudo mkdir -p msr_desktop/opt/keys
 sudo cp keys/* msr_desktop/opt/keys/
@@ -269,7 +266,7 @@ apt install --no-install-recommends -y \
   anacron \
   at-spi2-core \
   bc \
-  dbus-x11 \
+  dbus \
   dmz-cursor-theme \
   fontconfig \
   fonts-dejavu-core \
@@ -286,8 +283,14 @@ apt install --no-install-recommends -y \
   gnome-shell-extension-ubuntu-dock \
   gnome-shell-extension-ubuntu-tiling-assistant \
   gstreamer1.0-alsa \
+  gstreamer1.0-gl \
   gstreamer1.0-packagekit \
+  gstreamer1.0-pipewire \
+  gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-base-apps \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-tools \
+  gstreamer1.0-x \
   inputattach \
   language-selector-gnome \
   libatk-adaptor \
@@ -296,6 +299,9 @@ apt install --no-install-recommends -y \
   libu2f-udev \
   nautilus \
   openprinting-ppds \
+  pipewire \
+  pipewire-bin \
+  pipewire-alsa \
   pipewire-pulse \
   printer-driver-pnm2ppa \
   rfkill \
@@ -384,7 +390,11 @@ apt install --no-install-recommends -y \
   mesa-utils \
   libayatana-appindicator3-1 \
   file-roller \
-  p7zip-full
+  p7zip-full \
+  firmware-sof-signed \
+  libcanberra-gtk-module \
+  libcanberra-pulse \
+  power-profiles-daemon
 
 # Mozilla Firefox
 wget -qO /etc/apt/keyrings/packages.mozilla.org.asc https://packages.mozilla.org/apt/repo-signing-key.gpg
@@ -474,12 +484,25 @@ cat << EOT > /etc/apt/apt.conf.d/99remove-slack-desktop-crap
 DPkg::Post-Invoke { "rm -f /etc/cron.daily/slack || true"; };
 EOT
 
-tee -a /etc/skel/.profile <<EOT
+tee -a /etc/skel/.profile <<'EOT'
 if [ ! -f "$HOME/.config/.favorite-apps-installed" ]; then
     mkdir -p $HOME/.config
     touch $HOME/.config/.favorite-apps-installed
     gsettings set org.gnome.shell favorite-apps "['org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', 'firefox.desktop', 'google-chrome.desktop', 'slack.desktop', 'code.desktop', 'phpstorm.desktop']"
 fi
+EOT
+
+# Luks Password Changer
+wget -qO- https://guillemcanal.github.io/luks-change-password/public.key \
+| gpg --dearmor \
+| sudo dd status=none of=/etc/apt/trusted.gpg.d/luks-change-password.gpg
+
+cat << EOT | sudo dd status=none of=/etc/apt/sources.list.d/luks-change-password.sources
+Types: deb
+URIs: https://guillemcanal.github.io/luks-change-password/
+Suites: noble 
+Components: main 
+Signed-By: /etc/apt/trusted.gpg.d/luks-change-password.gpg
 EOT
 
 sudo apt-get update
@@ -496,7 +519,7 @@ docker-compose-plugin \
 code \
 phpstorm \
 slack-desktop \
-/opt/luks-password-changer.deb
+luks-password-changer
 
 apt autoremove
 apt clean
