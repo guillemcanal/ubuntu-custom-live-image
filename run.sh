@@ -58,7 +58,7 @@ check_package squashfs-tools
 log "👍 All required utilities are installed."
 
 # 1. Download the CD image. 
-wget -nc https://cdimage.ubuntu.com/noble/daily-live/pending/noble-desktop-amd64.iso
+wget --progress=dot:giga -nc https://cdimage.ubuntu.com/noble/daily-live/pending/noble-desktop-amd64.iso
 
 # 2. Extract the content of the ISO
 7z -y x "noble-desktop-amd64.iso" -o"${tmpdir}/iso" &>/dev/null

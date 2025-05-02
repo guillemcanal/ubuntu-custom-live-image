@@ -1,0 +1,72 @@
+name: Build and Release ISO
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build ISO
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Install required dependencies
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xorriso \
+            debootstrap \
+            squashfs-tools \
+            p7zip-full \
+            wget \
+            gpg \
+            fuse-overlayfs \
+            klibc-utils \
+            coreutils \
+            sed \
+            curl \
+            gh
+
+      # Make the script executable and run it
+      - name: Run build script
+        run: ./run.sh
+
+      # Locate the generated ISO file
+      - name: Locate ISO file
+        id: find_iso
+        run: echo "ISO_FILE=$(find . -type f -name "*autoinstall*.iso" | head -n 1)" >> $GITHUB_ENV
+
+      # Upload the ISO file as an artifact
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-file
+          path: ${{ env.ISO_FILE }}
+
+      # Authenticate GitHub CLI
+      - name: Authenticate GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh auth setup-git
+
+      # Delete all previous releases
+      - name: Delete previous releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          releases=$(gh release list --json tagName -q '.[].tagName')
+          for release in $releases; do
+            gh release delete "$release" -y
+          done
+
+      # Create a new release and upload the ISO file
+      - name: Create new release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create latest $ISO_FILE --title "Latest ISO" --notes "Generated ISO file"
